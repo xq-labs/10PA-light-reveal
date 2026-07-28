@@ -1,0 +1,435 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import * as THREE from "three";
+import { MindARThree } from "mind-ar/dist/mindar-image-three.prod.js";
+import {
+  targetsConfig,
+  type TargetConfig,
+  type VariantKey,
+} from "@/lib/targets.config";
+
+const degToRad = (deg: number) => (deg * Math.PI) / 180;
+const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Live-editable copy of a target's placement values. */
+type LiveValues = {
+  x: number;
+  y: number;
+  z: number;
+  scale: number;
+  rotationY: number;
+};
+
+const toLiveValues = (c: TargetConfig): LiveValues => ({
+  x: c.offset.x,
+  y: c.offset.y,
+  z: c.offset.z,
+  scale: c.scale,
+  rotationY: c.rotationY,
+});
+
+export default function ARScene({
+  calibrate = false,
+  initialVariant = "a",
+}: {
+  calibrate?: boolean;
+  initialVariant?: VariantKey;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Mutable, per-target working values (edited live in calibration mode).
+  const valuesRef = useRef<LiveValues[]>(targetsConfig.map(toLiveValues));
+  // Mesh + material per target index, so calibration and variant swaps can
+  // update them directly without re-running the effect.
+  const meshesRef = useRef<Array<THREE.Mesh | null>>(
+    targetsConfig.map(() => null)
+  );
+  const materialsRef = useRef<Array<THREE.MeshBasicMaterial | null>>(
+    targetsConfig.map(() => null)
+  );
+  // Cache loaded textures by src so toggling A/B doesn't refetch.
+  const textureCacheRef = useRef<Map<string, THREE.Texture>>(new Map());
+  const variantRef = useRef<VariantKey>(initialVariant);
+
+  const [error, setError] = useState<string | null>(null);
+  const [trackedIndex, setTrackedIndex] = useState<number | null>(null);
+  const [variant, setVariant] = useState<VariantKey>(initialVariant);
+  const [live, setLive] = useState<LiveValues[]>(
+    targetsConfig.map(toLiveValues)
+  );
+  const [loggedText, setLoggedText] = useState<string | null>(null);
+
+  /** Apply the current working values for a target onto its mesh. */
+  const applyToMesh = useCallback((index: number) => {
+    const mesh = meshesRef.current[index];
+    if (!mesh) return;
+    const v = valuesRef.current[index];
+    const aspect = (mesh.userData.aspect as number) || 1;
+    mesh.position.set(v.x, v.y, v.z);
+    mesh.rotation.set(0, degToRad(v.rotationY), 0);
+    // Target image is 1 unit wide; keep the avatar's aspect ratio.
+    mesh.scale.set(v.scale, v.scale * aspect, 1);
+  }, []);
+
+  /** Load (or reuse) the texture for a target's active variant and show it. */
+  const applyVariant = useCallback(
+    (index: number, key: VariantKey) => {
+      const material = materialsRef.current[index];
+      const mesh = meshesRef.current[index];
+      if (!material || !mesh) return;
+
+      const src = targetsConfig[index].variants[key];
+
+      const setTexture = (texture: THREE.Texture) => {
+        // Guard against a stale async load if the variant changed again.
+        if (variantRef.current !== key) return;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        material.map = texture;
+        material.needsUpdate = true;
+        const img = texture.image as { width: number; height: number };
+        if (img?.width) {
+          mesh.userData.aspect = img.height / img.width;
+        }
+        applyToMesh(index);
+      };
+
+      const cached = textureCacheRef.current.get(src);
+      if (cached) {
+        setTexture(cached);
+        return;
+      }
+      new THREE.TextureLoader().load(src, (texture) => {
+        textureCacheRef.current.set(src, texture);
+        setTexture(texture);
+      });
+    },
+    [applyToMesh]
+  );
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let mindarThree: MindARThree | null = null;
+    let cancelled = false;
+
+    const start = async () => {
+      try {
+        mindarThree = new MindARThree({
+          container,
+          imageTargetSrc: "/targets.mind",
+          maxTrack: 2,
+        });
+
+        const { renderer, scene, camera } = mindarThree;
+
+        targetsConfig.forEach((config) => {
+          const anchor = mindarThree!.addAnchor(config.targetIndex);
+
+          const geometry = new THREE.PlaneGeometry(1, 1);
+          const material = new THREE.MeshBasicMaterial({
+            transparent: true,
+            side: THREE.DoubleSide,
+          });
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.userData.aspect = 1;
+
+          meshesRef.current[config.targetIndex] = mesh;
+          materialsRef.current[config.targetIndex] = material;
+          applyToMesh(config.targetIndex);
+          applyVariant(config.targetIndex, variantRef.current);
+          anchor.group.add(mesh);
+
+          anchor.onTargetFound = () => setTrackedIndex(config.targetIndex);
+          anchor.onTargetLost = () =>
+            setTrackedIndex((current) =>
+              current === config.targetIndex ? null : current
+            );
+        });
+
+        await mindarThree.start();
+        if (cancelled) {
+          mindarThree.stop();
+          return;
+        }
+
+        renderer.setAnimationLoop(() => {
+          renderer.render(scene, camera);
+        });
+      } catch (err) {
+        console.error("Failed to start AR:", err);
+        if (cancelled) return;
+        const name = (err as { name?: string })?.name;
+        if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+          setError(
+            "Camera access was denied. Please allow camera access in your browser settings and reload this page."
+          );
+        } else if (name === "NotFoundError") {
+          setError("No camera was found on this device.");
+        } else {
+          setError(
+            "Could not start the camera. Make sure this page is served over HTTPS and that /targets.mind exists, then reload."
+          );
+        }
+      }
+    };
+
+    start();
+
+    return () => {
+      cancelled = true;
+      try {
+        mindarThree?.renderer.setAnimationLoop(null);
+        mindarThree?.stop();
+      } catch {
+        // ignore teardown errors
+      }
+    };
+  }, [applyToMesh, applyVariant]);
+
+  /** Flip the global A/B variant and swap every target's texture live. */
+  const toggleVariant = () => {
+    const next: VariantKey = variantRef.current === "a" ? "b" : "a";
+    variantRef.current = next;
+    setVariant(next);
+    targetsConfig.forEach((c) => applyVariant(c.targetIndex, next));
+  };
+
+  /** Update one field of the currently tracked target, live. */
+  const updateValue = (field: keyof LiveValues, value: number) => {
+    if (trackedIndex === null) return;
+    valuesRef.current[trackedIndex] = {
+      ...valuesRef.current[trackedIndex],
+      [field]: value,
+    };
+    setLive((prev) => {
+      const next = [...prev];
+      next[trackedIndex] = valuesRef.current[trackedIndex];
+      return next;
+    });
+    applyToMesh(trackedIndex);
+  };
+
+  /** Build a targets.config.ts-ready snippet from the current values. */
+  const logConfig = () => {
+    const entries = targetsConfig
+      .map((c, i) => {
+        const v = valuesRef.current[i];
+        return `  {
+    targetIndex: ${c.targetIndex},
+    variants: {
+      a: ${JSON.stringify(c.variants.a)},
+      b: ${JSON.stringify(c.variants.b)},
+    },
+    offset: { x: ${round(v.x)}, y: ${round(v.y)}, z: ${round(v.z)} },
+    scale: ${round(v.scale)},
+    rotationY: ${round(v.rotationY)},
+  },`;
+      })
+      .join("\n");
+    const snippet = `export const targetsConfig: TargetConfig[] = [\n${entries}\n];`;
+    // eslint-disable-next-line no-console
+    console.log(snippet);
+    setLoggedText(snippet);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black">
+      {/* MindAR injects the camera <video> and WebGL <canvas> into this container. */}
+      <div ref={containerRef} className="absolute inset-0" />
+
+      {/* Back link */}
+      <Link
+        href="/"
+        className="absolute left-4 top-4 z-20 rounded-full bg-black/50 px-4 py-2 text-sm font-medium text-white backdrop-blur"
+      >
+        ← Back
+      </Link>
+
+      {/* Variant A/B toggle */}
+      {!error && (
+        <button
+          onClick={toggleVariant}
+          className="absolute right-4 top-4 z-20 rounded-full bg-black/50 px-4 py-2 text-sm font-medium text-white backdrop-blur active:scale-95"
+        >
+          Variant {variant.toUpperCase()}
+        </button>
+      )}
+
+      {/* Camera error */}
+      {error && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/90 p-6">
+          <div className="max-w-sm space-y-4 text-center">
+            <h2 className="text-lg font-semibold text-white">Camera unavailable</h2>
+            <p className="text-sm text-neutral-300">{error}</p>
+            <Link
+              href="/"
+              className="inline-block rounded-full bg-white px-5 py-2 text-sm font-semibold text-black"
+            >
+              Go back
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* Calibration panel */}
+      {calibrate && !error && (
+        <CalibrationPanel
+          trackedIndex={trackedIndex}
+          values={trackedIndex !== null ? live[trackedIndex] : null}
+          onChange={updateValue}
+          onLog={logConfig}
+          loggedText={loggedText}
+        />
+      )}
+    </div>
+  );
+}
+
+function CalibrationPanel({
+  trackedIndex,
+  values,
+  onChange,
+  onLog,
+  loggedText,
+}: {
+  trackedIndex: number | null;
+  values: LiveValues | null;
+  onChange: (field: keyof LiveValues, value: number) => void;
+  onLog: () => void;
+  loggedText: string | null;
+}) {
+  return (
+    <div className="absolute bottom-4 left-4 right-4 z-20 mx-auto max-w-sm rounded-2xl border border-white/15 bg-black/70 p-4 text-white backdrop-blur">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wide text-white/70">
+          Calibration
+        </span>
+        <span className="text-xs text-white/70">
+          {trackedIndex === null
+            ? "No target in view"
+            : `Editing target ${trackedIndex}`}
+        </span>
+      </div>
+
+      {values === null ? (
+        <p className="text-sm text-white/60">
+          Point the camera at a target to edit its avatar placement.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <Slider
+            label="x (right/left)"
+            value={values.x}
+            min={-1}
+            max={1}
+            step={0.01}
+            onChange={(v) => onChange("x", v)}
+          />
+          <Slider
+            label="y (up/down)"
+            value={values.y}
+            min={-1}
+            max={1}
+            step={0.01}
+            onChange={(v) => onChange("y", v)}
+          />
+          <Slider
+            label="z (toward/away)"
+            value={values.z}
+            min={-1}
+            max={1}
+            step={0.01}
+            onChange={(v) => onChange("z", v)}
+          />
+          <Slider
+            label="scale"
+            value={values.scale}
+            min={0.05}
+            max={3}
+            step={0.01}
+            onChange={(v) => onChange("scale", v)}
+          />
+          <Slider
+            label="rotationY (deg)"
+            value={values.rotationY}
+            min={-180}
+            max={180}
+            step={1}
+            onChange={(v) => onChange("rotationY", v)}
+          />
+        </div>
+      )}
+
+      <button
+        onClick={onLog}
+        className="mt-3 w-full rounded-full bg-white px-4 py-2 text-sm font-semibold text-black active:scale-[0.98]"
+      >
+        Log config
+      </button>
+
+      {loggedText && (
+        <pre className="mt-3 max-h-40 overflow-auto rounded-lg bg-black/60 p-3 text-[10px] leading-relaxed text-green-300">
+          {loggedText}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function Slider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  const nudge = (delta: number) => {
+    const next = Math.min(max, Math.max(min, round(value + delta)));
+    onChange(next);
+  };
+
+  return (
+    <div>
+      <div className="mb-0.5 flex items-center justify-between text-xs">
+        <span className="text-white/70">{label}</span>
+        <span className="font-mono text-white">{round(value)}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => nudge(-step)}
+          className="h-6 w-6 shrink-0 rounded bg-white/15 text-sm leading-none text-white active:scale-95"
+          aria-label={`decrease ${label}`}
+        >
+          −
+        </button>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          className="h-1 w-full accent-white"
+        />
+        <button
+          onClick={() => nudge(step)}
+          className="h-6 w-6 shrink-0 rounded bg-white/15 text-sm leading-none text-white active:scale-95"
+          aria-label={`increase ${label}`}
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}

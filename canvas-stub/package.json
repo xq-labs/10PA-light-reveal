@@ -1,0 +1,7 @@
+{
+  "name": "canvas",
+  "version": "2.11.2",
+  "description": "Local no-op stub for the native `canvas` package. MindAR only uses `canvas` in its Node-side image compiler; the browser runtime bundle we import never requires it, so we stub it to avoid a native build.",
+  "main": "index.js",
+  "license": "MIT"
+}
