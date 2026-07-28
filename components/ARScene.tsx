@@ -30,6 +30,51 @@ const toLiveValues = (c: TargetConfig): LiveValues => ({
   rotationY: c.rotationY,
 });
 
+// Calibration tweaks persist per-device in localStorage so they survive reloads
+// while you tune. This never leaves the browser — to make values permanent, copy
+// the config snippet and paste it into lib/targets.config.ts.
+const STORAGE_KEY = "ar-calibration-v1";
+
+function loadStoredValues(): LiveValues[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LiveValues[];
+    if (!Array.isArray(parsed) || parsed.length !== targetsConfig.length) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function initialValues(): LiveValues[] {
+  const stored = loadStoredValues();
+  return targetsConfig.map((c, i) => stored?.[i] ?? toLiveValues(c));
+}
+
+/** Build a targets.config.ts-ready snippet from the current values. */
+function buildSnippet(values: LiveValues[]): string {
+  const entries = targetsConfig
+    .map((c, i) => {
+      const v = values[i];
+      return `  {
+    targetIndex: ${c.targetIndex},
+    variants: {
+      a: ${JSON.stringify(c.variants.a)},
+      b: ${JSON.stringify(c.variants.b)},
+    },
+    offset: { x: ${round(v.x)}, y: ${round(v.y)}, z: ${round(v.z)} },
+    scale: ${round(v.scale)},
+    rotationY: ${round(v.rotationY)},
+  },`;
+    })
+    .join("\n");
+  return `export const targetsConfig: TargetConfig[] = [\n${entries}\n];`;
+}
+
 export default function ARScene({
   calibrate = false,
   initialVariant = "a",
@@ -40,7 +85,8 @@ export default function ARScene({
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Mutable, per-target working values (edited live in calibration mode).
-  const valuesRef = useRef<LiveValues[]>(targetsConfig.map(toLiveValues));
+  // Seeded from any calibration saved on this device.
+  const valuesRef = useRef<LiveValues[]>(initialValues());
   // Mesh + material per target index, so calibration and variant swaps can
   // update them directly without re-running the effect.
   const meshesRef = useRef<Array<THREE.Mesh | null>>(
@@ -56,10 +102,9 @@ export default function ARScene({
   const [error, setError] = useState<string | null>(null);
   const [trackedIndex, setTrackedIndex] = useState<number | null>(null);
   const [variant, setVariant] = useState<VariantKey>(initialVariant);
-  const [live, setLive] = useState<LiveValues[]>(
-    targetsConfig.map(toLiveValues)
-  );
+  const [live, setLive] = useState<LiveValues[]>(() => valuesRef.current);
   const [loggedText, setLoggedText] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   /** Apply the current working values for a target onto its mesh. */
   const applyToMesh = useCallback((index: number) => {
@@ -197,6 +242,18 @@ export default function ARScene({
     targetsConfig.forEach((c) => applyVariant(c.targetIndex, next));
   };
 
+  /** Save the current working values to this device's localStorage. */
+  const persist = () => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(valuesRef.current)
+      );
+    } catch {
+      // storage may be unavailable (private mode, etc.) — ignore
+    }
+  };
+
   /** Update one field of the currently tracked target, live. */
   const updateValue = (field: keyof LiveValues, value: number) => {
     if (trackedIndex === null) return;
@@ -210,29 +267,42 @@ export default function ARScene({
       return next;
     });
     applyToMesh(trackedIndex);
+    persist();
   };
 
-  /** Build a targets.config.ts-ready snippet from the current values. */
+  /** Print the config snippet to the console and show it on screen. */
   const logConfig = () => {
-    const entries = targetsConfig
-      .map((c, i) => {
-        const v = valuesRef.current[i];
-        return `  {
-    targetIndex: ${c.targetIndex},
-    variants: {
-      a: ${JSON.stringify(c.variants.a)},
-      b: ${JSON.stringify(c.variants.b)},
-    },
-    offset: { x: ${round(v.x)}, y: ${round(v.y)}, z: ${round(v.z)} },
-    scale: ${round(v.scale)},
-    rotationY: ${round(v.rotationY)},
-  },`;
-      })
-      .join("\n");
-    const snippet = `export const targetsConfig: TargetConfig[] = [\n${entries}\n];`;
+    const snippet = buildSnippet(valuesRef.current);
     // eslint-disable-next-line no-console
     console.log(snippet);
     setLoggedText(snippet);
+  };
+
+  /** Copy the config snippet to the clipboard (for pasting into the repo). */
+  const copyConfig = async () => {
+    const snippet = buildSnippet(valuesRef.current);
+    setLoggedText(snippet);
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard blocked — the snippet is still shown below to copy manually
+      setCopied(false);
+    }
+  };
+
+  /** Clear saved calibration on this device and revert to the file defaults. */
+  const resetConfig = () => {
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    valuesRef.current = targetsConfig.map(toLiveValues);
+    setLive(valuesRef.current.map((v) => ({ ...v })));
+    targetsConfig.forEach((c) => applyToMesh(c.targetIndex));
+    setLoggedText(null);
   };
 
   return (
@@ -281,6 +351,9 @@ export default function ARScene({
           values={trackedIndex !== null ? live[trackedIndex] : null}
           onChange={updateValue}
           onLog={logConfig}
+          onCopy={copyConfig}
+          onReset={resetConfig}
+          copied={copied}
           loggedText={loggedText}
         />
       )}
@@ -293,12 +366,18 @@ function CalibrationPanel({
   values,
   onChange,
   onLog,
+  onCopy,
+  onReset,
+  copied,
   loggedText,
 }: {
   trackedIndex: number | null;
   values: LiveValues | null;
   onChange: (field: keyof LiveValues, value: number) => void;
   onLog: () => void;
+  onCopy: () => void;
+  onReset: () => void;
+  copied: boolean;
   loggedText: string | null;
 }) {
   return (
@@ -363,12 +442,31 @@ function CalibrationPanel({
         </div>
       )}
 
-      <button
-        onClick={onLog}
-        className="mt-3 w-full rounded-full bg-white px-4 py-2 text-sm font-semibold text-black active:scale-[0.98]"
-      >
-        Log config
-      </button>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={onCopy}
+          className="flex-1 rounded-full bg-white px-4 py-2 text-sm font-semibold text-black active:scale-[0.98]"
+        >
+          {copied ? "Copied ✓" : "Copy config"}
+        </button>
+        <button
+          onClick={onLog}
+          className="rounded-full border border-white/25 px-4 py-2 text-sm font-medium text-white active:scale-[0.98]"
+        >
+          Log
+        </button>
+        <button
+          onClick={onReset}
+          className="rounded-full border border-white/25 px-4 py-2 text-sm font-medium text-white active:scale-[0.98]"
+        >
+          Reset
+        </button>
+      </div>
+
+      <p className="mt-2 text-[11px] leading-snug text-white/50">
+        Tweaks auto-save on this device. Tap “Copy config” and paste the snippet
+        into lib/targets.config.ts to make it permanent.
+      </p>
 
       {loggedText && (
         <pre className="mt-3 max-h-40 overflow-auto rounded-lg bg-black/60 p-3 text-[10px] leading-relaxed text-green-300">
