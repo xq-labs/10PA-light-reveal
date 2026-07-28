@@ -165,6 +165,12 @@ export default function ARScene({
           container,
           imageTargetSrc: "/targets.mind",
           maxTrack: 2,
+          // Disable MindAR's built-in overlays — they render an off-center scan
+          // graphic and sit on top of everything, blocking taps. We supply our
+          // own UI instead.
+          uiLoading: "no",
+          uiScanning: "no",
+          uiError: "no",
         });
 
         const { renderer, scene, camera } = mindarThree;
@@ -304,9 +310,13 @@ export default function ARScene({
   };
 
   return (
-    <div className="fixed inset-0 bg-black">
-      {/* MindAR injects the camera <video> and WebGL <canvas> into this container. */}
-      <div ref={containerRef} className="absolute inset-0" />
+    <div className="fixed inset-0 overflow-hidden bg-black">
+      {/*
+        MindAR injects the camera <video> and WebGL <canvas> into this container.
+        `z-0` makes it its own stacking context so nothing MindAR injects can
+        paint over (or intercept taps meant for) the controls layered above it.
+      */}
+      <div ref={containerRef} className="absolute inset-0 z-0" />
 
       {/* Back link */}
       <Link
