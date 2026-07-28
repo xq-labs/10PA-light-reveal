@@ -14,14 +14,26 @@
  *   - Origin (0, 0) is the CENTER of the tracked image.
  *   - +x = right, +y = up, +z = toward the viewer (out of the page).
  *
- * So an offset of { x: 0.25, y: -0.1, z: 0 } nudges the avatar right and down,
+ * So an offset of { x: 0.25, y: -0.1 } nudges the avatar right and down,
  * relative to the center of the frame. `scale` is the plane width in those same
- * units (1 = as wide as the target image). `rotationY` is in DEGREES.
+ * units (1 = as wide as the target image).
+ *
+ * The overlay is kept COPLANAR with the print: `offset.z` and `rotationY` are
+ * always 0 (the renderer ignores any other value). Keeping the plane flush with
+ * the paper is what makes tracking stay accurate as you move closer/farther —
+ * a lifted or tilted plane drifts with perspective. Only x / y / scale are
+ * calibrated.
  *
  * Tune these live using calibration mode (open /ar?calibrate=true), then paste
- * the values the "Log config" button prints back into this file.
+ * the values the "Copy config" button gives you back into this file.
  */
 export type VariantKey = "a" | "b";
+
+/** Human-friendly names shown in the variant picker. */
+export const variantLabels: Record<VariantKey, string> = {
+  a: "Nate",
+  b: "Alissa",
+};
 
 export interface TargetConfig {
   targetIndex: number;
@@ -52,7 +64,7 @@ export const targetsConfig: TargetConfig[] = [
       a: "/avatars/frame1-variant-a.png",
       b: "/avatars/frame1-variant-b.png",
     },
-    offset: { x: -0.4, y: -0.24, z: -0.03 },
+    offset: { x: -0.4, y: -0.24, z: 0 },
     scale: 0.61,
     rotationY: 0,
   },

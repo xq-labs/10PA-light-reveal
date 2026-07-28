@@ -6,28 +6,25 @@ import * as THREE from "three";
 import { MindARThree } from "mind-ar/dist/mindar-image-three.prod.js";
 import {
   targetsConfig,
+  variantLabels,
   type TargetConfig,
   type VariantKey,
 } from "@/lib/targets.config";
 
-const degToRad = (deg: number) => (deg * Math.PI) / 180;
 const round = (n: number) => Math.round(n * 1000) / 1000;
 
-/** Live-editable copy of a target's placement values. */
+// The overlay is always coplanar with the print (see targets.config.ts), so
+// only x / y / scale are calibrated. z and rotationY stay 0.
 type LiveValues = {
   x: number;
   y: number;
-  z: number;
   scale: number;
-  rotationY: number;
 };
 
 const toLiveValues = (c: TargetConfig): LiveValues => ({
   x: c.offset.x,
   y: c.offset.y,
-  z: c.offset.z,
   scale: c.scale,
-  rotationY: c.rotationY,
 });
 
 // Calibration tweaks persist per-device in localStorage so they survive reloads
@@ -66,9 +63,9 @@ function buildSnippet(values: LiveValues[]): string {
       a: ${JSON.stringify(c.variants.a)},
       b: ${JSON.stringify(c.variants.b)},
     },
-    offset: { x: ${round(v.x)}, y: ${round(v.y)}, z: ${round(v.z)} },
+    offset: { x: ${round(v.x)}, y: ${round(v.y)}, z: 0 },
     scale: ${round(v.scale)},
-    rotationY: ${round(v.rotationY)},
+    rotationY: 0,
   },`;
     })
     .join("\n");
@@ -105,6 +102,7 @@ export default function ARScene({
   const [live, setLive] = useState<LiveValues[]>(() => valuesRef.current);
   const [loggedText, setLoggedText] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [toolsVisible, setToolsVisible] = useState(true);
 
   /** Apply the current working values for a target onto its mesh. */
   const applyToMesh = useCallback((index: number) => {
@@ -112,8 +110,9 @@ export default function ARScene({
     if (!mesh) return;
     const v = valuesRef.current[index];
     const aspect = (mesh.userData.aspect as number) || 1;
-    mesh.position.set(v.x, v.y, v.z);
-    mesh.rotation.set(0, degToRad(v.rotationY), 0);
+    // Always coplanar with the print: z = 0, no rotation.
+    mesh.position.set(v.x, v.y, 0);
+    mesh.rotation.set(0, 0, 0);
     // Target image is 1 unit wide; keep the avatar's aspect ratio.
     mesh.scale.set(v.scale, v.scale * aspect, 1);
   }, []);
@@ -234,9 +233,8 @@ export default function ARScene({
     };
   }, [applyToMesh, applyVariant]);
 
-  /** Flip the global A/B variant and swap every target's texture live. */
-  const toggleVariant = () => {
-    const next: VariantKey = variantRef.current === "a" ? "b" : "a";
+  /** Select the global variant and swap every target's texture live. */
+  const selectVariant = (next: VariantKey) => {
     variantRef.current = next;
     setVariant(next);
     targetsConfig.forEach((c) => applyVariant(c.targetIndex, next));
@@ -318,14 +316,9 @@ export default function ARScene({
         ← Back
       </Link>
 
-      {/* Variant A/B toggle */}
+      {/* Variant picker (Nate / Alissa) */}
       {!error && (
-        <button
-          onClick={toggleVariant}
-          className="absolute right-4 top-4 z-20 rounded-full bg-black/50 px-4 py-2 text-sm font-medium text-white backdrop-blur active:scale-95"
-        >
-          Variant {variant.toUpperCase()}
-        </button>
+        <VariantDropdown variant={variant} onSelect={selectVariant} />
       )}
 
       {/* Camera error */}
@@ -344,8 +337,8 @@ export default function ARScene({
         </div>
       )}
 
-      {/* Calibration panel */}
-      {calibrate && !error && (
+      {/* Calibration panel (with a show/hide-tools toggle) */}
+      {calibrate && !error && toolsVisible && (
         <CalibrationPanel
           trackedIndex={trackedIndex}
           values={trackedIndex !== null ? live[trackedIndex] : null}
@@ -353,9 +346,74 @@ export default function ARScene({
           onLog={logConfig}
           onCopy={copyConfig}
           onReset={resetConfig}
+          onHide={() => setToolsVisible(false)}
           copied={copied}
           loggedText={loggedText}
         />
+      )}
+
+      {/* Floating "show tools" button when the panel is hidden */}
+      {calibrate && !error && !toolsVisible && (
+        <button
+          onClick={() => setToolsVisible(true)}
+          className="absolute bottom-4 right-4 z-20 flex items-center gap-2 rounded-full bg-black/60 px-4 py-2 text-sm font-medium text-white backdrop-blur active:scale-95"
+        >
+          <span aria-hidden>⤢</span> Show tools
+        </button>
+      )}
+    </div>
+  );
+}
+
+function VariantDropdown({
+  variant,
+  onSelect,
+}: {
+  variant: VariantKey;
+  onSelect: (v: VariantKey) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const keys = Object.keys(variantLabels) as VariantKey[];
+
+  return (
+    <div className="absolute right-4 top-4 z-20 w-40 text-sm">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between rounded-full bg-black/60 px-4 py-2 font-medium text-white backdrop-blur active:scale-[0.98]"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="truncate">{variantLabels[variant]}</span>
+        <span aria-hidden className="ml-2 text-white/70">
+          {open ? "▲" : "▼"}
+        </span>
+      </button>
+
+      {open && (
+        <ul
+          role="listbox"
+          className="mt-2 overflow-hidden rounded-2xl border border-white/15 bg-black/80 backdrop-blur"
+        >
+          {keys.map((k) => {
+            const active = k === variant;
+            return (
+              <li key={k} role="option" aria-selected={active}>
+                <button
+                  onClick={() => {
+                    onSelect(k);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between px-4 py-2 text-left text-white active:bg-white/10 ${
+                    active ? "bg-white/10 font-semibold" : "font-medium"
+                  }`}
+                >
+                  <span className="truncate">{variantLabels[k]}</span>
+                  {active && <span aria-hidden>✓</span>}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -368,6 +426,7 @@ function CalibrationPanel({
   onLog,
   onCopy,
   onReset,
+  onHide,
   copied,
   loggedText,
 }: {
@@ -377,20 +436,30 @@ function CalibrationPanel({
   onLog: () => void;
   onCopy: () => void;
   onReset: () => void;
+  onHide: () => void;
   copied: boolean;
   loggedText: string | null;
 }) {
   return (
     <div className="absolute bottom-4 left-4 right-4 z-20 mx-auto max-w-sm rounded-2xl border border-white/15 bg-black/70 p-4 text-white backdrop-blur">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-white/70">
           Calibration
         </span>
-        <span className="text-xs text-white/70">
-          {trackedIndex === null
-            ? "No target in view"
-            : `Editing target ${trackedIndex}`}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-white/70">
+            {trackedIndex === null
+              ? "No target in view"
+              : `Editing target ${trackedIndex}`}
+          </span>
+          <button
+            onClick={onHide}
+            className="rounded-full bg-white/15 px-3 py-1 text-xs font-medium text-white active:scale-95"
+            aria-label="Hide tools for full-screen camera"
+          >
+            ⤢ Hide
+          </button>
+        </div>
       </div>
 
       {values === null ? (
@@ -416,28 +485,12 @@ function CalibrationPanel({
             onChange={(v) => onChange("y", v)}
           />
           <Slider
-            label="z (toward/away)"
-            value={values.z}
-            min={-1}
-            max={1}
-            step={0.01}
-            onChange={(v) => onChange("z", v)}
-          />
-          <Slider
             label="scale"
             value={values.scale}
             min={0.05}
             max={3}
             step={0.01}
             onChange={(v) => onChange("scale", v)}
-          />
-          <Slider
-            label="rotationY (deg)"
-            value={values.rotationY}
-            min={-180}
-            max={180}
-            step={1}
-            onChange={(v) => onChange("rotationY", v)}
           />
         </div>
       )}
