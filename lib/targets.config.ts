@@ -41,8 +41,8 @@ export const targetsConfig: TargetConfig[] = [
       a: "/avatars/frame0-variant-a.png",
       b: "/avatars/frame0-variant-b.png",
     },
-    offset: { x: 0, y: 0, z: 0 },
-    scale: 1,
+    offset: { x: -0.26, y: -0.28, z: 0 },
+    scale: 0.41,
     rotationY: 0,
   },
   {
@@ -52,8 +52,8 @@ export const targetsConfig: TargetConfig[] = [
       a: "/avatars/frame1-variant-a.png",
       b: "/avatars/frame1-variant-b.png",
     },
-    offset: { x: 0, y: 0, z: 0 },
-    scale: 1,
+    offset: { x: -0.4, y: -0.24, z: -0.03 },
+    scale: 0.61,
     rotationY: 0,
   },
 ];
