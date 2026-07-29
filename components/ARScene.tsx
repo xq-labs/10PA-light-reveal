@@ -97,6 +97,7 @@ export default function ARScene({
   const variantRef = useRef<VariantKey>(initialVariant);
 
   const [error, setError] = useState<string | null>(null);
+  const [started, setStarted] = useState(false);
   const [trackedIndex, setTrackedIndex] = useState<number | null>(null);
   const [variant, setVariant] = useState<VariantKey>(initialVariant);
   const [live, setLive] = useState<LiveValues[]>(() => valuesRef.current);
@@ -204,6 +205,7 @@ export default function ARScene({
           mindarThree.stop();
           return;
         }
+        setStarted(true);
 
         renderer.setAnimationLoop(() => {
           renderer.render(scene, camera);
@@ -318,6 +320,11 @@ export default function ARScene({
       */}
       <div ref={containerRef} className="absolute inset-0 z-0" />
 
+      {/* Scanning viewfinder — shown until a target is recognized */}
+      {!error && trackedIndex === null && (
+        <ScanningOverlay started={started} />
+      )}
+
       {/* Back link */}
       <Link
         href="/"
@@ -371,6 +378,43 @@ export default function ARScene({
           <span aria-hidden>⤢</span> Show tools
         </button>
       )}
+    </div>
+  );
+}
+
+function ScanningOverlay({ started }: { started: boolean }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center">
+      {/* Viewfinder box with pulsing corner brackets + sweeping scan line */}
+      <div className="relative aspect-square w-[68vw] max-w-[340px]">
+        {/* Corner brackets */}
+        <div className="ar-corners absolute inset-0">
+          <span className="absolute left-0 top-0 h-9 w-9 rounded-tl-2xl border-l-[3px] border-t-[3px] border-white/90" />
+          <span className="absolute right-0 top-0 h-9 w-9 rounded-tr-2xl border-r-[3px] border-t-[3px] border-white/90" />
+          <span className="absolute bottom-0 left-0 h-9 w-9 rounded-bl-2xl border-b-[3px] border-l-[3px] border-white/90" />
+          <span className="absolute bottom-0 right-0 h-9 w-9 rounded-br-2xl border-b-[3px] border-r-[3px] border-white/90" />
+        </div>
+
+        {/* Sweeping scan line (only once the camera is live) */}
+        {started && (
+          <div className="absolute inset-x-3 top-0 overflow-hidden">
+            <div
+              className="ar-scanline absolute inset-x-0 h-16 -translate-y-1/2"
+              style={{
+                background:
+                  "linear-gradient(to bottom, rgba(56,189,248,0) 0%, rgba(56,189,248,0.35) 45%, rgba(125,211,252,0.9) 50%, rgba(56,189,248,0.35) 55%, rgba(56,189,248,0) 100%)",
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Hint text */}
+      <p className="mt-6 rounded-full bg-black/50 px-4 py-2 text-center text-sm font-medium text-white backdrop-blur">
+        {started
+          ? "Point your camera at a frame"
+          : "Starting camera…"}
+      </p>
     </div>
   );
 }

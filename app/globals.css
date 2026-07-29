@@ -11,3 +11,46 @@ body {
   margin: 0;
   overscroll-behavior: none;
 }
+
+/* Scanning viewfinder: a line sweeping down the frame, plus a soft pulse. */
+@keyframes ar-scanline {
+  0% {
+    top: 0%;
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes ar-corner-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.ar-scanline {
+  animation: ar-scanline 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.ar-corners {
+  animation: ar-corner-pulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ar-scanline,
+  .ar-corners {
+    animation: none;
+  }
+}
